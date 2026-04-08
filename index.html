@@ -47,6 +47,45 @@
             margin-top: 2rem; font-size: 0.9rem; color: rgba(160,165,192,0.6);
             pointer-events: auto; text-align: center; white-space: pre-line;
         }
+        #vr-hud {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 100;
+            display: none;
+            pointer-events: none;
+            padding: 1rem 1.25rem 1.5rem;
+            font-family: 'Courier New', monospace;
+            color: #00e5ff;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            background: linear-gradient(180deg, rgba(2, 15, 24, 0.08) 0%, rgba(2, 15, 24, 0.55) 100%);
+            border-top: 1px solid rgba(0, 229, 255, 0.35);
+        }
+        #vr-hud .hud-grid {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+            width: min(900px, 100%);
+            margin: 0 auto;
+            padding-top: 0.5rem;
+            border-top: 1px solid rgba(0, 229, 255, 0.2);
+        }
+        #vr-hud .hud-block {
+            min-width: 14rem;
+        }
+        #vr-hud .hud-label {
+            display: block;
+            font-size: 0.68rem;
+            opacity: 0.75;
+            margin-bottom: 0.35rem;
+        }
+        #vr-hud .hud-value {
+            font-size: 1rem;
+            text-shadow: 0 0 12px rgba(0, 229, 255, 0.5);
+        }
     </style>
 </head>
 <body>
@@ -58,6 +97,18 @@
         </div>
         <button id="vr-button">ENTER VR</button>
         <div id="status-text">Initializing…</div>
+    </div>
+    <div id="vr-hud">
+        <div class="hud-grid">
+            <div class="hud-block">
+                <span class="hud-label">Altitude</span>
+                <span id="hud-altitude" class="hud-value">0.00</span>
+            </div>
+            <div class="hud-block">
+                <span class="hud-label">Coordinates</span>
+                <span id="hud-coords" class="hud-value">0.0  0.0  0.0</span>
+            </div>
+        </div>
     </div>
 
     <!-- Basis Universal WASM Transcoder (from local build, no 3rd-party dependency) -->

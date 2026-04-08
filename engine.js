@@ -11,8 +11,8 @@
 const CFG = {
     sphereRadius: 1.0,
     sphereSegments: 64,
-    spherePos: [0.0, 1.5, -3.0],
-    sunDir: [0.5, 0.3, 0.8],       // normalized in shader
+    spherePos: [0.0, 0.0, -3.0],
+    sunDir: [0.6, 0.2, -0.5],      // normalized in shader — dramatic terminator
     assets: 'assets/',
     transcoderPath: 'lib/',
 };
@@ -35,6 +35,11 @@ function perspectiveMatrix(fov, aspect, near, far) {
 }
 
 const IDENTITY = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+
+/** Matches perspectiveMatrix: point sprites scale with perspective + viewport (space / satellite motion). */
+function starPointScaleForViewport(viewportHeight, projYScale) {
+    return (viewportHeight * 0.5) * projYScale;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 3. SPHERE GEOMETRY (positions, normals, UVs, tangents)
@@ -142,46 +147,82 @@ void main(){
 
 const VS_STAR = `#version 300 es
 precision highp float;
-layout(location=0) in vec3 aStarData; // x=RA, y=Dec, z=Mag
+layout(location=0) in vec4 aStarData; // x=RA, y=Dec, z=Mag, w=Kelvin
 
 uniform mat4 uModel, uView, uProj;
+// (viewport height) / (2 * tan(fovY/2)) — perspective-correct point diameter in pixels
+uniform float uPointScale;
 
-out float vVaryingAlpha;
+out float vIntensity;
+out vec3  vStarColor;
+
+// Attempt 6500K-normalized blackbody → RGB (Tanner Helland approx)
+vec3 kelvinToRGB(float K) {
+    float t = K / 100.0;
+    float r, g, b;
+    if (t <= 66.0) {
+        r = 1.0;
+        g = clamp((99.4708 * log(t) - 161.1196) / 255.0, 0.0, 1.0);
+    } else {
+        r = clamp(329.698727 * pow(t - 60.0, -0.1332047592) / 255.0, 0.0, 1.0);
+        g = clamp(288.1221695 * pow(t - 60.0, -0.0755148492) / 255.0, 0.0, 1.0);
+    }
+    if (t >= 66.0) {
+        b = 1.0;
+    } else if (t <= 19.0) {
+        b = 0.0;
+    } else {
+        b = clamp((138.5177 * log(t - 10.0) - 305.0448) / 255.0, 0.0, 1.0);
+    }
+    return vec3(r, g, b);
+}
 
 void main(){
-    float ra = aStarData.x;
+    float ra  = aStarData.x;
     float dec = aStarData.y;
     float mag = aStarData.z;
+    float K   = aStarData.w;
 
-    // Cartesian on a large background sphere (radius 50)
-    float r = 50.0;
-    float x = r * cos(dec) * cos(ra);
-    float y = r * sin(dec);
-    float z = r * cos(dec) * sin(ra);
+    // Distant inertial sky: fixed RA/Dec on a large sphere (satellite / space POV).
+    float radius = 50.0;
+    float x = radius * cos(dec) * cos(ra);
+    float y = radius * sin(dec);
+    float z = radius * cos(dec) * sin(ra);
 
-    vec4 wp = uModel * vec4(x,y,z,1.0);
-    gl_Position = uProj * uView * wp;
+    vec4 wp = uModel * vec4(x, y, z, 1.0);
+    vec4 clip = uProj * uView * wp;
+    gl_Position = clip;
 
-    // Visual magnitude: lower = brighter, naked-eye limit ~6.5
-    // Map range [-1.5 .. 6.5] → [1.0 .. 0.0]
-    float intensity = clamp(1.0 - (mag + 1.5) / 8.0, 0.1, 1.0);
-    gl_PointSize = max(1.0, intensity * 3.0);
-    vVaryingAlpha = intensity;
+    // Pogson law: flux ∝ 10^(-0.4 m); relative brightness vs ~mag 4 reference
+    float m = clamp(mag, -1.5, 8.0);
+    float flux = pow(10.0, -0.4 * (m - 4.0));
+    float intensity = clamp(flux * 0.62, 0.04, 1.0);
+
+    float w = max(abs(clip.w), 1e-4);
+    // Unresolved point sources: 1–2 screen pixels max (no Airy disk / spikes in this pass).
+    float px = intensity > 0.7 ? 2.0 : 1.0;
+    gl_PointSize = clamp(px * uPointScale / w, 1.0, 2.0);
+
+    vIntensity = intensity;
+    // Human vision in this scene: subtle temperature tint, mostly near-white stars.
+    vec3 color = kelvinToRGB(clamp(K, 2000.0, 40000.0));
+    vStarColor = mix(vec3(1.0), color, 0.35);
 }`;
 
 const FS_STAR = `#version 300 es
 precision highp float;
 
-in float vVaryingAlpha;
+in float vIntensity;
+in vec3  vStarColor;
 out vec4 oColor;
 
 void main(){
-    vec2 coord = gl_PointCoord - 0.5;
-    float dist = length(coord);
-    if(dist > 0.5) discard;
-    
-    float intensity = (0.5 - dist) * 2.0;
-    oColor = vec4(1.0, 1.0, 1.0, intensity * vVaryingAlpha);
+    // Real appearance: unresolved disk — a single sharp dot (no bloom, spikes, or PSF).
+    float d = length(gl_PointCoord - vec2(0.5));
+    if (d > 0.5) discard;
+
+    float L = min(vIntensity * 1.05, 1.0);
+    oColor = vec4(vStarColor * L, 1.0);
 }`;
 
 // ── RA/Dec string → radians conversion ──────────────────────
@@ -204,12 +245,13 @@ function parseDec(str) {
 
 // Mock fallback (used while the catalog is loading)
 function generateMockStars(count) {
-    const data = new Float32Array(count * 3);
+    const data = new Float32Array(count * 4);
     for (let i = 0; i < count; i++) {
         const u = Math.random(), v = Math.random();
-        data[i * 3]     = 2 * Math.PI * u;                          // RA
-        data[i * 3 + 1] = Math.asin(1.0 - 2.0 * v);                // Dec
-        data[i * 3 + 2] = -1.5 + Math.pow(Math.random(), 3) * 7.5; // Mag
+        data[i * 4]     = 2 * Math.PI * u;                          // RA
+        data[i * 4 + 1] = Math.asin(1.0 - 2.0 * v);                // Dec
+        data[i * 4 + 2] = -1.5 + Math.pow(Math.random(), 3) * 7.5; // Mag
+        data[i * 4 + 3] = 3000 + Math.random() * 27000;             // Kelvin
     }
     return data;
 }
@@ -224,14 +266,15 @@ async function fetchYaleBSC() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const catalog = await res.json();
 
-        // Filter to entries that have all three required fields
+        // Filter to entries that have all required fields
         const valid = catalog.filter(s => s.RA && s.Dec && s.V !== undefined);
 
-        const data = new Float32Array(valid.length * 3);
+        const data = new Float32Array(valid.length * 4);
         for (let i = 0; i < valid.length; i++) {
-            data[i * 3]     = parseRA(valid[i].RA);
-            data[i * 3 + 1] = parseDec(valid[i].Dec);
-            data[i * 3 + 2] = parseFloat(valid[i].V);
+            data[i * 4]     = parseRA(valid[i].RA);
+            data[i * 4 + 1] = parseDec(valid[i].Dec);
+            data[i * 4 + 2] = parseFloat(valid[i].V);
+            data[i * 4 + 3] = valid[i].K ? parseFloat(valid[i].K) : 6500;
         }
 
         // Hot-swap the GPU buffer
@@ -375,7 +418,9 @@ let gl, program, vao, idxCount;
 let uModel, uView, uProj, uSunDir, uTexReady, uAlbedoLoc, uNormalLoc;
 let albedoTex = null, normalTex = null, texturesLoaded = false;
 let xrSession = null, xrRefSpace = null, raf = null;
-let starProgram, starVao, starCount, starBuf, uStarModel, uStarView, uStarProj;
+let starProgram, starVao, starCount, starBuf, uStarModel, uStarView, uStarProj, uStarPointScale;
+let audioCtx = null, humOsc = null, humGain = null;
+let hudRoot = null, hudAltitudeEl = null, hudCoordsEl = null;
 
 // Locomotion state (WebXR thumbstick flight)
 const locomotion = { x: 0, y: 0, z: 0 };   // accumulated world offset
@@ -385,6 +430,28 @@ function log(msg) {
     console.log(msg);
     const el = document.getElementById('status-text');
     if (el) el.textContent = msg;
+}
+
+function initSpacecraftAudio() {
+    if (audioCtx) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+
+    audioCtx = new AudioCtx();
+    humOsc = audioCtx.createOscillator();
+    const humLowpass = audioCtx.createBiquadFilter();
+    humGain = audioCtx.createGain();
+
+    humOsc.type = 'sine';
+    humOsc.frequency.setValueAtTime(40, audioCtx.currentTime);
+    humLowpass.type = 'lowpass';
+    humLowpass.frequency.setValueAtTime(80, audioCtx.currentTime);
+    humGain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+
+    humOsc.connect(humLowpass);
+    humLowpass.connect(humGain);
+    humGain.connect(audioCtx.destination);
+    humOsc.start();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -401,6 +468,9 @@ function compileShader(src, type) {
 
 async function initEngine() {
     const canvas = document.getElementById('gl-canvas');
+    hudRoot = document.getElementById('vr-hud');
+    hudAltitudeEl = document.getElementById('hud-altitude');
+    hudCoordsEl = document.getElementById('hud-coords');
     gl = canvas.getContext('webgl2', { xrCompatible: true, antialias: true });
     if (!gl) { log('WebGL2 not supported.'); return; }
 
@@ -420,6 +490,7 @@ async function initEngine() {
     uSunDir   = gl.getUniformLocation(program, 'uSunDir');
     uTexReady = gl.getUniformLocation(program, 'uTexReady');
     uNormalLoc = gl.getUniformLocation(program, 'uNormal');
+    uAlbedoLoc = gl.getUniformLocation(program, 'uAlbedo');
 
     // --- Star Shaders ---
     const vsStar = compileShader(VS_STAR, gl.VERTEX_SHADER);
@@ -434,6 +505,7 @@ async function initEngine() {
     uStarModel = gl.getUniformLocation(starProgram, 'uModel');
     uStarView = gl.getUniformLocation(starProgram, 'uView');
     uStarProj = gl.getUniformLocation(starProgram, 'uProj');
+    uStarPointScale = gl.getUniformLocation(starProgram, 'uPointScale');
 
     // --- Geometry ---
     const sphere = createSphere(CFG.sphereRadius, CFG.sphereSegments);
@@ -468,13 +540,12 @@ async function initEngine() {
     gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
     gl.bufferData(gl.ARRAY_BUFFER, starData, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
 
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     // --- Start 2D fallback loop immediately (shows grid sphere) ---
     window.addEventListener('resize', resizeCanvas);
@@ -530,12 +601,17 @@ async function checkXR() {
 
 async function enterVR() {
     try {
-        xrSession = await navigator.xr.requestSession('immersive-vr');
+        initSpacecraftAudio();
+        xrSession = await navigator.xr.requestSession('immersive-vr', {
+            optionalFeatures: ['dom-overlay'],
+            domOverlay: { root: hudRoot || document.getElementById('vr-hud') },
+        });
         xrSession.addEventListener('end', exitVR);
         await gl.makeXRCompatible();
         xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
         xrRefSpace = await xrSession.requestReferenceSpace('local');
         document.getElementById('ui-container').style.display = 'none';
+        if (hudRoot) hudRoot.style.display = 'block';
         if (raf !== null) cancelAnimationFrame(raf);
         raf = xrSession.requestAnimationFrame(renderXR);
     } catch (e) { console.error('VR session failed:', e); }
@@ -544,6 +620,13 @@ async function enterVR() {
 function exitVR() {
     xrSession = null;
     document.getElementById('ui-container').style.display = 'flex';
+    if (hudRoot) hudRoot.style.display = 'none';
+    if (audioCtx) {
+        audioCtx.close();
+        audioCtx = null;
+        humOsc = null;
+        humGain = null;
+    }
     resizeCanvas();
     raf = requestAnimationFrame(render2D);
 }
@@ -586,19 +669,19 @@ function render2D(time) {
 
     const proj = perspectiveMatrix(Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 100);
 
-    // --- Draw Stars ---
+    // --- Draw Stars (opaque dots — standard blend, no additive bloom) ---
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.useProgram(starProgram);
     gl.bindVertexArray(starVao);
     gl.uniformMatrix4fv(uStarProj, false, proj);
     gl.uniformMatrix4fv(uStarView, false, IDENTITY);
-    const rot = time * 0.00001;
-    const sC = Math.cos(rot), sS = Math.sin(rot);
-    const starModel = new Float32Array([sC,0,sS,0, 0,1,0,0, -sS,0,sC,0, 0,0,0,1]);
-    gl.uniformMatrix4fv(uStarModel, false, starModel);
-    
+    gl.uniformMatrix4fv(uStarModel, false, IDENTITY);
+    gl.uniform1f(uStarPointScale, starPointScaleForViewport(gl.canvas.height, proj[5]));
+
     gl.depthMask(false);
     gl.drawArrays(gl.POINTS, 0, starCount);
     gl.depthMask(true);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     // --- Draw Moon ---
     bindScene(time);
@@ -635,9 +718,10 @@ function renderXR(time, frame) {
                 // Right    = +X column (col 0)
                 const rgtX =  m[0], rgtY =  m[1], rgtZ =  m[2];
 
-                locomotion.x += (rgtX * dx + fwdX * dy) * MOVE_SPEED;
-                locomotion.y += (rgtY * dx + fwdY * dy) * MOVE_SPEED;
-                locomotion.z += (rgtZ * dx + fwdZ * dy) * MOVE_SPEED;
+                // pushing thumbstick forward gives negative dy
+                locomotion.x += (rgtX * dx - fwdX * dy) * MOVE_SPEED;
+                locomotion.y += (rgtY * dx - fwdY * dy) * MOVE_SPEED;
+                locomotion.z += (rgtZ * dx - fwdZ * dy) * MOVE_SPEED;
             }
         }
     }
@@ -656,24 +740,24 @@ function renderXR(time, frame) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
     gl.clearColor(0.01, 0.01, 0.02, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    const rot = time * 0.00001;
-    const sC = Math.cos(rot), sS = Math.sin(rot);
-    const starModel = new Float32Array([sC,0,sS,0, 0,1,0,0, -sS,0,sC,0, 0,0,0,1]);
-
     for (const view of pose.views) {
         const vp = layer.getViewport(view);
         gl.viewport(vp.x, vp.y, vp.width, vp.height);
 
-        // --- Draw Stars ---
+        // --- Draw Stars (inertial sky; head / craft motion via view matrix) ---
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         gl.useProgram(starProgram);
         gl.bindVertexArray(starVao);
         gl.uniformMatrix4fv(uStarProj, false, view.projectionMatrix);
         gl.uniformMatrix4fv(uStarView, false, view.transform.inverse.matrix);
-        gl.uniformMatrix4fv(uStarModel, false, starModel);
+        gl.uniformMatrix4fv(uStarModel, false, IDENTITY);
+        const py = view.projectionMatrix[5];
+        gl.uniform1f(uStarPointScale, starPointScaleForViewport(vp.height, py));
 
         gl.depthMask(false);
         gl.drawArrays(gl.POINTS, 0, starCount);
         gl.depthMask(true);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
         // --- Draw Moon ---
         bindScene(time);
@@ -681,6 +765,18 @@ function renderXR(time, frame) {
         gl.uniformMatrix4fv(uView, false, view.transform.inverse.matrix);
         gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
     }
+
+    const cameraX = pose.transform.position.x + locomotion.x;
+    const cameraY = pose.transform.position.y + locomotion.y;
+    const cameraZ = pose.transform.position.z + locomotion.z;
+    const [moonX, moonY, moonZ] = CFG.spherePos;
+    const dx = cameraX - moonX;
+    const dy = cameraY - moonY;
+    const dz = cameraZ - moonZ;
+    const altitude = Math.sqrt(dx * dx + dy * dy + dz * dz) - CFG.sphereRadius;
+
+    if (hudAltitudeEl) hudAltitudeEl.textContent = altitude.toFixed(2);
+    if (hudCoordsEl) hudCoordsEl.textContent = `${cameraX.toFixed(2)}  ${cameraY.toFixed(2)}  ${cameraZ.toFixed(2)}`;
 }
 
 function resizeCanvas() {
