@@ -29,8 +29,16 @@
             -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         }
         p.subtitle { margin-top: 0.5rem; font-size: 1.2rem; color: #A0A5C0; letter-spacing: 1.5px; }
-        #vr-button {
-            display: none; pointer-events: auto; padding: 1.2rem 4rem;
+        .mode-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.9rem;
+            pointer-events: auto;
+        }
+        .mode-button {
+            display: inline-flex; align-items: center; justify-content: center;
+            padding: 1.2rem 2rem;
             font-size: 1.2rem; font-weight: 700; letter-spacing: 2px; color: #fff;
             background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
             border-radius: 50px; cursor: pointer;
@@ -38,10 +46,14 @@
             box-shadow: 0 4px 30px rgba(0,0,0,0.5);
             transition: all 0.4s cubic-bezier(0.16,1,0.3,1);
         }
-        #vr-button:hover {
+        .mode-button:hover:not(:disabled) {
             background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.3);
             transform: translateY(-4px) scale(1.02);
             box-shadow: 0 15px 40px rgba(0,0,0,0.6), 0 0 20px rgba(118,129,179,0.4);
+        }
+        .mode-button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
         }
         #status-text {
             margin-top: 2rem; font-size: 0.9rem; color: rgba(160,165,192,0.6);
@@ -86,6 +98,49 @@
             font-size: 1rem;
             text-shadow: 0 0 12px rgba(0, 229, 255, 0.5);
         }
+        #dpad-container {
+            position: fixed;
+            right: 2rem;
+            bottom: 2rem;
+            z-index: 20;
+            pointer-events: none;
+            display: grid;
+            grid-template-columns: repeat(3, 60px);
+            grid-template-rows: repeat(3, 60px);
+            gap: 0.55rem;
+        }
+        .dpad-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.08);
+            color: #f5f7ff;
+            font-size: 1.2rem;
+            font-weight: 700;
+            cursor: pointer;
+            pointer-events: auto;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+            user-select: none;
+            touch-action: none;
+        }
+        .dpad-btn:hover,
+        .dpad-btn.active {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.3);
+            transform: scale(1.04);
+        }
+        #dpad-up { grid-column: 2; grid-row: 1; }
+        #dpad-left { grid-column: 1; grid-row: 2; }
+        #dpad-right { grid-column: 3; grid-row: 2; }
+        #dpad-down { grid-column: 2; grid-row: 3; }
+        @media (pointer: fine) {
+            #dpad-container {
+                opacity: 0.72;
+            }
+        }
     </style>
 </head>
 <body>
@@ -95,7 +150,10 @@
             <h1>Lunar Engine</h1>
             <p class="subtitle">PHYSICALLY BASED SIMULATION</p>
         </div>
-        <button id="vr-button">ENTER VR</button>
+        <div class="mode-buttons">
+            <button id="flight-mode-button" class="mode-button">Starship Flight</button>
+            <button id="vr-mode-button" class="mode-button" disabled>Immersive / VR</button>
+        </div>
         <div id="status-text">Initializing…</div>
     </div>
     <div id="vr-hud">
@@ -109,6 +167,12 @@
                 <span id="hud-coords" class="hud-value">0.0  0.0  0.0</span>
             </div>
         </div>
+    </div>
+    <div id="dpad-container" aria-label="Flight Controls">
+        <button id="dpad-up" class="dpad-btn" aria-label="Move Forward">▲</button>
+        <button id="dpad-left" class="dpad-btn" aria-label="Move Left">◀</button>
+        <button id="dpad-right" class="dpad-btn" aria-label="Move Right">▶</button>
+        <button id="dpad-down" class="dpad-btn" aria-label="Move Backward">▼</button>
     </div>
 
     <!-- Basis Universal WASM Transcoder (from local build, no 3rd-party dependency) -->

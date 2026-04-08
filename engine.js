@@ -34,6 +34,34 @@ function perspectiveMatrix(fov, aspect, near, far) {
     return m;
 }
 
+function lookAtMatrix(eye, target, up) {
+    let zx = eye[0] - target[0];
+    let zy = eye[1] - target[1];
+    let zz = eye[2] - target[2];
+    const zLen = Math.hypot(zx, zy, zz) || 1.0;
+    zx /= zLen; zy /= zLen; zz /= zLen;
+
+    let xx = up[1] * zz - up[2] * zy;
+    let xy = up[2] * zx - up[0] * zz;
+    let xz = up[0] * zy - up[1] * zx;
+    const xLen = Math.hypot(xx, xy, xz) || 1.0;
+    xx /= xLen; xy /= xLen; xz /= xLen;
+
+    const yx = zy * xz - zz * xy;
+    const yy = zz * xx - zx * xz;
+    const yz = zx * xy - zy * xx;
+
+    return new Float32Array([
+        xx, yx, zx, 0,
+        xy, yy, zy, 0,
+        xz, yz, zz, 0,
+        -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
+        -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
+        -(zx * eye[0] + zy * eye[1] + zz * eye[2]),
+        1,
+    ]);
+}
+
 const IDENTITY = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
 
 /** Matches perspectiveMatrix: point sprites scale with perspective + viewport (space / satellite motion). */
@@ -421,6 +449,20 @@ let xrSession = null, xrRefSpace = null, raf = null;
 let starProgram, starVao, starCount, starBuf, uStarModel, uStarView, uStarProj, uStarPointScale;
 let audioCtx = null, humOsc = null, humGain = null;
 let hudRoot = null, hudAltitudeEl = null, hudCoordsEl = null;
+let uiContainer = null;
+let flightModeBtn = null;
+let flightActive = false;
+const cameraPosition = new Float32Array([0.0, 0.0, 0.0]);
+let pitch = 0.0;
+let yaw = Math.PI;
+let previousFrameTime = 0.0;
+const keyState = {
+    KeyW: false, KeyA: false, KeyS: false, KeyD: false,
+    ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false,
+};
+const NON_VR_FLY_SPEED = 2.0;
+const MOUSE_LOOK_SENSITIVITY = 0.002;
+const MAX_PITCH = (89 * Math.PI) / 180;
 
 // Locomotion state (WebXR thumbstick flight)
 const locomotion = { x: 0, y: 0, z: 0 };   // accumulated world offset
@@ -468,6 +510,8 @@ function compileShader(src, type) {
 
 async function initEngine() {
     const canvas = document.getElementById('gl-canvas');
+    uiContainer = document.getElementById('ui-container');
+    flightModeBtn = document.getElementById('flight-mode-button');
     hudRoot = document.getElementById('vr-hud');
     hudAltitudeEl = document.getElementById('hud-altitude');
     hudCoordsEl = document.getElementById('hud-coords');
@@ -547,6 +591,78 @@ async function initEngine() {
     gl.enable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
 
+    canvas.addEventListener('click', () => {
+        if (flightActive && document.pointerLockElement !== canvas) {
+            canvas.requestPointerLock();
+        }
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+        if (document.pointerLockElement !== canvas && flightActive) {
+            flightActive = false;
+            if (uiContainer) uiContainer.style.display = 'flex';
+            if (hudRoot) hudRoot.style.display = 'none';
+            document.getElementById('dpad-container').style.display = 'none';
+        }
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement !== canvas || xrSession) return;
+        yaw -= e.movementX * MOUSE_LOOK_SENSITIVITY;
+        pitch -= e.movementY * MOUSE_LOOK_SENSITIVITY;
+        if (pitch > MAX_PITCH) pitch = MAX_PITCH;
+        if (pitch < -MAX_PITCH) pitch = -MAX_PITCH;
+    });
+
+    const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
+    window.addEventListener('keydown', (e) => {
+        if (!movementKeys.has(e.code)) return;
+        keyState[e.code] = true;
+        e.preventDefault();
+    });
+    window.addEventListener('keyup', (e) => {
+        if (!movementKeys.has(e.code)) return;
+        keyState[e.code] = false;
+        e.preventDefault();
+    });
+
+    const bindDPadButton = (buttonId, keyCode) => {
+        const btn = document.getElementById(buttonId);
+        if (!btn) return;
+        const press = (e) => {
+            keyState[keyCode] = true;
+            btn.classList.add('active');
+            e.preventDefault();
+        };
+        const release = (e) => {
+            keyState[keyCode] = false;
+            btn.classList.remove('active');
+            e.preventDefault();
+        };
+        btn.addEventListener('pointerdown', press);
+        btn.addEventListener('pointerup', release);
+        btn.addEventListener('pointercancel', release);
+        btn.addEventListener('pointerleave', release);
+    };
+    bindDPadButton('dpad-up', 'KeyW');
+    bindDPadButton('dpad-down', 'KeyS');
+    bindDPadButton('dpad-left', 'KeyA');
+    bindDPadButton('dpad-right', 'KeyD');
+
+    document.getElementById('dpad-container').style.display = 'none';
+
+    if (flightModeBtn) {
+        flightModeBtn.addEventListener('click', () => {
+            flightActive = true;
+            previousFrameTime = 0;
+            if (uiContainer) uiContainer.style.display = 'none';
+            if (hudRoot) hudRoot.style.display = 'block';
+            document.getElementById('dpad-container').style.display = 'grid';
+            initSpacecraftAudio();
+            canvas.requestPointerLock();
+        });
+    }
+
     // --- Start 2D fallback loop immediately (shows grid sphere) ---
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
@@ -588,11 +704,11 @@ async function loadAllTextures() {
 // 8. WEBXR
 // ═══════════════════════════════════════════════════════════════
 async function checkXR() {
-    const btn = document.getElementById('vr-button');
+    const btn = document.getElementById('vr-mode-button');
     if (navigator.xr) {
         try {
             if (await navigator.xr.isSessionSupported('immersive-vr')) {
-                btn.style.display = 'block';
+                btn.disabled = false;
                 btn.addEventListener('click', enterVR);
             } else { log('Immersive VR not supported on this hardware.'); }
         } catch (e) { log('WebXR query failed.'); }
@@ -610,7 +726,7 @@ async function enterVR() {
         await gl.makeXRCompatible();
         xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
         xrRefSpace = await xrSession.requestReferenceSpace('local');
-        document.getElementById('ui-container').style.display = 'none';
+        if (uiContainer) uiContainer.style.display = 'none';
         if (hudRoot) hudRoot.style.display = 'block';
         if (raf !== null) cancelAnimationFrame(raf);
         raf = xrSession.requestAnimationFrame(renderXR);
@@ -619,8 +735,11 @@ async function enterVR() {
 
 function exitVR() {
     xrSession = null;
-    document.getElementById('ui-container').style.display = 'flex';
+    flightActive = false;
+    previousFrameTime = 0;
+    if (uiContainer) uiContainer.style.display = 'flex';
     if (hudRoot) hudRoot.style.display = 'none';
+    document.getElementById('dpad-container').style.display = 'none';
     if (audioCtx) {
         audioCtx.close();
         audioCtx = null;
@@ -664,6 +783,37 @@ function normalize3([x, y, z]) {
 // ═══════════════════════════════════════════════════════════════
 function render2D(time) {
     if (xrSession) return;
+    const dt = previousFrameTime > 0 ? (time - previousFrameTime) / 1000 : 0;
+    previousFrameTime = time;
+
+    const cosPitch = Math.cos(pitch);
+    const sinPitch = Math.sin(pitch);
+    const cosYaw = Math.cos(yaw);
+    const sinYaw = Math.sin(yaw);
+    const forwardX = cosPitch * sinYaw;
+    const forwardY = sinPitch;
+    const forwardZ = cosPitch * cosYaw;
+    const rightX = cosYaw;
+    const rightY = 0;
+    const rightZ = -sinYaw;
+
+    const moveForward = (keyState.KeyW || keyState.ArrowUp ? 1 : 0) - (keyState.KeyS || keyState.ArrowDown ? 1 : 0);
+    const moveRight = (keyState.KeyD || keyState.ArrowRight ? 1 : 0) - (keyState.KeyA || keyState.ArrowLeft ? 1 : 0);
+    const moveLen = Math.hypot(moveForward, moveRight);
+    if (moveLen > 0) {
+        const speed = (NON_VR_FLY_SPEED * dt) / moveLen;
+        cameraPosition[0] += (forwardX * moveForward + rightX * moveRight) * speed;
+        cameraPosition[1] += (forwardY * moveForward + rightY * moveRight) * speed;
+        cameraPosition[2] += (forwardZ * moveForward + rightZ * moveRight) * speed;
+    }
+
+    const lookTarget = [
+        cameraPosition[0] + forwardX,
+        cameraPosition[1] + forwardY,
+        cameraPosition[2] + forwardZ,
+    ];
+    const viewMatrix = lookAtMatrix(cameraPosition, lookTarget, [0, 1, 0]);
+
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     gl.clearColor(0.01, 0.01, 0.02, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -674,7 +824,7 @@ function render2D(time) {
     gl.useProgram(starProgram);
     gl.bindVertexArray(starVao);
     gl.uniformMatrix4fv(uStarProj, false, proj);
-    gl.uniformMatrix4fv(uStarView, false, IDENTITY);
+    gl.uniformMatrix4fv(uStarView, false, viewMatrix);
     gl.uniformMatrix4fv(uStarModel, false, IDENTITY);
     gl.uniform1f(uStarPointScale, starPointScaleForViewport(gl.canvas.height, proj[5]));
 
@@ -686,8 +836,18 @@ function render2D(time) {
     // --- Draw Moon ---
     bindScene(time);
     gl.uniformMatrix4fv(uProj, false, proj);
-    gl.uniformMatrix4fv(uView, false, IDENTITY);
+    gl.uniformMatrix4fv(uView, false, viewMatrix);
     gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
+
+    if (flightActive) {
+        const [moonX, moonY, moonZ] = CFG.spherePos;
+        const adx = cameraPosition[0] - moonX;
+        const ady = cameraPosition[1] - moonY;
+        const adz = cameraPosition[2] - moonZ;
+        const altitude = Math.sqrt(adx * adx + ady * ady + adz * adz) - CFG.sphereRadius;
+        if (hudAltitudeEl) hudAltitudeEl.textContent = altitude.toFixed(2);
+        if (hudCoordsEl) hudCoordsEl.textContent = `${cameraPosition[0].toFixed(2)}  ${cameraPosition[1].toFixed(2)}  ${cameraPosition[2].toFixed(2)}`;
+    }
 
     raf = requestAnimationFrame(render2D);
 }
