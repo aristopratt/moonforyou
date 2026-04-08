@@ -1,0 +1,10 @@
+basis_universal/
+venv/
+__pycache__/
+build_lunar_assets.py
+pipeline.log
+server.log
+*.tif
+*.pyc
+README.md
+.git/
