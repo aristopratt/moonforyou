@@ -1,3 +1,6 @@
+# Large raw assets (source TIFs for the build pipeline, not served at runtime)
+assets/*.tif
+
 # Environments
 venv/
 .env
