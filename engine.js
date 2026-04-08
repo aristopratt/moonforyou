@@ -140,6 +140,112 @@ void main(){
     oColor = vec4(c, 1.0);
 }`;
 
+const VS_STAR = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aStarData; // x=RA, y=Dec, z=Mag
+
+uniform mat4 uModel, uView, uProj;
+
+out float vVaryingAlpha;
+
+void main(){
+    float ra = aStarData.x;
+    float dec = aStarData.y;
+    float mag = aStarData.z;
+
+    // Cartesian on a large background sphere (radius 50)
+    float r = 50.0;
+    float x = r * cos(dec) * cos(ra);
+    float y = r * sin(dec);
+    float z = r * cos(dec) * sin(ra);
+
+    vec4 wp = uModel * vec4(x,y,z,1.0);
+    gl_Position = uProj * uView * wp;
+
+    // Visual magnitude: lower = brighter, naked-eye limit ~6.5
+    // Map range [-1.5 .. 6.5] → [1.0 .. 0.0]
+    float intensity = clamp(1.0 - (mag + 1.5) / 8.0, 0.1, 1.0);
+    gl_PointSize = max(1.0, intensity * 3.0);
+    vVaryingAlpha = intensity;
+}`;
+
+const FS_STAR = `#version 300 es
+precision highp float;
+
+in float vVaryingAlpha;
+out vec4 oColor;
+
+void main(){
+    vec2 coord = gl_PointCoord - 0.5;
+    float dist = length(coord);
+    if(dist > 0.5) discard;
+    
+    float intensity = (0.5 - dist) * 2.0;
+    oColor = vec4(1.0, 1.0, 1.0, intensity * vVaryingAlpha);
+}`;
+
+// ── RA/Dec string → radians conversion ──────────────────────
+// RA format from Yale BSC JSON: "00h 05m 09.9s"
+function parseRA(str) {
+    const m = str.match(/([\d.]+)h\s*([\d.]+)m\s*([\d.]+)s/);
+    if (!m) return 0;
+    const hours = parseFloat(m[1]) + parseFloat(m[2]) / 60 + parseFloat(m[3]) / 3600;
+    return hours * (Math.PI / 12);  // hours → radians (24h = 2π)
+}
+
+// Dec format from Yale BSC JSON: "+45° 13′ 45″"  or  "-05° 42′ 27″"
+function parseDec(str) {
+    const m = str.match(/([+-]?)(\d+)°\s*(\d+)′\s*([\d.]+)″/);
+    if (!m) return 0;
+    const sign = m[1] === '-' ? -1 : 1;
+    const deg = parseFloat(m[2]) + parseFloat(m[3]) / 60 + parseFloat(m[4]) / 3600;
+    return sign * deg * (Math.PI / 180);  // degrees → radians
+}
+
+// Mock fallback (used while the catalog is loading)
+function generateMockStars(count) {
+    const data = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+        const u = Math.random(), v = Math.random();
+        data[i * 3]     = 2 * Math.PI * u;                          // RA
+        data[i * 3 + 1] = Math.asin(1.0 - 2.0 * v);                // Dec
+        data[i * 3 + 2] = -1.5 + Math.pow(Math.random(), 3) * 7.5; // Mag
+    }
+    return data;
+}
+
+// ── Yale Bright Star Catalog loader ─────────────────────────
+const BSC_URL = 'https://raw.githubusercontent.com/brettonw/YaleBrightStarCatalog/master/bsc5-short.json';
+
+async function fetchYaleBSC() {
+    log('↓ Fetching Yale Bright Star Catalog…');
+    try {
+        const res = await fetch(BSC_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const catalog = await res.json();
+
+        // Filter to entries that have all three required fields
+        const valid = catalog.filter(s => s.RA && s.Dec && s.V !== undefined);
+
+        const data = new Float32Array(valid.length * 3);
+        for (let i = 0; i < valid.length; i++) {
+            data[i * 3]     = parseRA(valid[i].RA);
+            data[i * 3 + 1] = parseDec(valid[i].Dec);
+            data[i * 3 + 2] = parseFloat(valid[i].V);
+        }
+
+        // Hot-swap the GPU buffer
+        gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        starCount = valid.length;
+
+        log(`✓ Yale BSC loaded — ${starCount} stars`);
+    } catch (e) {
+        log('⚠ BSC fetch failed, keeping mock stars: ' + e.message);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 5. COMPRESSED FORMAT DETECTION & KTX2 LOADING
 // ═══════════════════════════════════════════════════════════════
@@ -269,6 +375,11 @@ let gl, program, vao, idxCount;
 let uModel, uView, uProj, uSunDir, uTexReady, uAlbedoLoc, uNormalLoc;
 let albedoTex = null, normalTex = null, texturesLoaded = false;
 let xrSession = null, xrRefSpace = null, raf = null;
+let starProgram, starVao, starCount, starBuf, uStarModel, uStarView, uStarProj;
+
+// Locomotion state (WebXR thumbstick flight)
+const locomotion = { x: 0, y: 0, z: 0 };   // accumulated world offset
+const MOVE_SPEED = 0.04;                    // metres per frame at full stick
 
 function log(msg) {
     console.log(msg);
@@ -308,8 +419,21 @@ async function initEngine() {
     uProj     = gl.getUniformLocation(program, 'uProj');
     uSunDir   = gl.getUniformLocation(program, 'uSunDir');
     uTexReady = gl.getUniformLocation(program, 'uTexReady');
-    uAlbedoLoc = gl.getUniformLocation(program, 'uAlbedo');
     uNormalLoc = gl.getUniformLocation(program, 'uNormal');
+
+    // --- Star Shaders ---
+    const vsStar = compileShader(VS_STAR, gl.VERTEX_SHADER);
+    const fsStar = compileShader(FS_STAR, gl.FRAGMENT_SHADER);
+    starProgram = gl.createProgram();
+    gl.attachShader(starProgram, vsStar); gl.attachShader(starProgram, fsStar);
+    gl.linkProgram(starProgram);
+    if (!gl.getProgramParameter(starProgram, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(starProgram)); return;
+    }
+
+    uStarModel = gl.getUniformLocation(starProgram, 'uModel');
+    uStarView = gl.getUniformLocation(starProgram, 'uView');
+    uStarProj = gl.getUniformLocation(starProgram, 'uProj');
 
     // --- Geometry ---
     const sphere = createSphere(CFG.sphereRadius, CFG.sphereSegments);
@@ -335,8 +459,22 @@ async function initEngine() {
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, sphere.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
 
+    // --- Star Geometry (mock, replaced async by real catalog) ---
+    starCount = 1000;
+    const starData = generateMockStars(starCount);
+    starVao = gl.createVertexArray();
+    gl.bindVertexArray(starVao);
+    starBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, starData, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     // --- Start 2D fallback loop immediately (shows grid sphere) ---
     window.addEventListener('resize', resizeCanvas);
@@ -345,6 +483,9 @@ async function initEngine() {
 
     // --- Load textures in background ---
     loadAllTextures();
+
+    // --- Load real star catalog in background ---
+    fetchYaleBSC();
 
     // --- WebXR ---
     checkXR();
@@ -443,8 +584,25 @@ function render2D(time) {
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     gl.clearColor(0.01, 0.01, 0.02, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
+    const proj = perspectiveMatrix(Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 100);
+
+    // --- Draw Stars ---
+    gl.useProgram(starProgram);
+    gl.bindVertexArray(starVao);
+    gl.uniformMatrix4fv(uStarProj, false, proj);
+    gl.uniformMatrix4fv(uStarView, false, IDENTITY);
+    const rot = time * 0.00001;
+    const sC = Math.cos(rot), sS = Math.sin(rot);
+    const starModel = new Float32Array([sC,0,sS,0, 0,1,0,0, -sS,0,sC,0, 0,0,0,1]);
+    gl.uniformMatrix4fv(uStarModel, false, starModel);
+    
+    gl.depthMask(false);
+    gl.drawArrays(gl.POINTS, 0, starCount);
+    gl.depthMask(true);
+
+    // --- Draw Moon ---
     bindScene(time);
-    gl.uniformMatrix4fv(uProj, false, perspectiveMatrix(Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 100));
+    gl.uniformMatrix4fv(uProj, false, proj);
     gl.uniformMatrix4fv(uView, false, IDENTITY);
     gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
 
@@ -453,18 +611,72 @@ function render2D(time) {
 
 function renderXR(time, frame) {
     raf = frame.session.requestAnimationFrame(renderXR);
-    const pose = frame.getViewerPose(xrRefSpace);
+
+    // ── Thumbstick locomotion ────────────────────────────────
+    const session = frame.session;
+    for (const src of session.inputSources) {
+        if (!src.gamepad) continue;
+        const gp = src.gamepad;
+        // Standard mapping: axes[2]=thumbstick X, axes[3]=thumbstick Y
+        const ax = gp.axes.length > 2 ? gp.axes[2] : 0;
+        const ay = gp.axes.length > 3 ? gp.axes[3] : 0;
+
+        // Apply deadzone
+        const dx = Math.abs(ax) > 0.15 ? ax : 0;
+        const dy = Math.abs(ay) > 0.15 ? ay : 0;
+
+        if (dx !== 0 || dy !== 0) {
+            // Get the viewer orientation to move relative to gaze
+            const tempPose = frame.getViewerPose(xrRefSpace);
+            if (tempPose) {
+                const m = tempPose.transform.matrix; // 4×4 column-major
+                // Forward  = -Z column (col 2 negated)
+                const fwdX = -m[8], fwdY = -m[9], fwdZ = -m[10];
+                // Right    = +X column (col 0)
+                const rgtX =  m[0], rgtY =  m[1], rgtZ =  m[2];
+
+                locomotion.x += (rgtX * dx + fwdX * dy) * MOVE_SPEED;
+                locomotion.y += (rgtY * dx + fwdY * dy) * MOVE_SPEED;
+                locomotion.z += (rgtZ * dx + fwdZ * dy) * MOVE_SPEED;
+            }
+        }
+    }
+
+    // Create an offset reference space that incorporates locomotion
+    const offsetTransform = new XRRigidTransform(
+        { x: -locomotion.x, y: -locomotion.y, z: -locomotion.z, w: 1 },
+        { x: 0, y: 0, z: 0, w: 1 }
+    );
+    const movedRefSpace = xrRefSpace.getOffsetReferenceSpace(offsetTransform);
+
+    const pose = frame.getViewerPose(movedRefSpace);
     if (!pose) return;
 
-    const layer = frame.session.renderState.baseLayer;
+    const layer = session.renderState.baseLayer;
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
     gl.clearColor(0.01, 0.01, 0.02, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    bindScene(time);
+    const rot = time * 0.00001;
+    const sC = Math.cos(rot), sS = Math.sin(rot);
+    const starModel = new Float32Array([sC,0,sS,0, 0,1,0,0, -sS,0,sC,0, 0,0,0,1]);
 
     for (const view of pose.views) {
         const vp = layer.getViewport(view);
         gl.viewport(vp.x, vp.y, vp.width, vp.height);
+
+        // --- Draw Stars ---
+        gl.useProgram(starProgram);
+        gl.bindVertexArray(starVao);
+        gl.uniformMatrix4fv(uStarProj, false, view.projectionMatrix);
+        gl.uniformMatrix4fv(uStarView, false, view.transform.inverse.matrix);
+        gl.uniformMatrix4fv(uStarModel, false, starModel);
+
+        gl.depthMask(false);
+        gl.drawArrays(gl.POINTS, 0, starCount);
+        gl.depthMask(true);
+
+        // --- Draw Moon ---
+        bindScene(time);
         gl.uniformMatrix4fv(uProj, false, view.projectionMatrix);
         gl.uniformMatrix4fv(uView, false, view.transform.inverse.matrix);
         gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
