@@ -1,34 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Lunar WebXR Simulation</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&display=swap"
+        rel="stylesheet">
     <style>
-        body, html {
-            margin: 0; padding: 0; width: 100%; height: 100%;
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
             font-family: 'Outfit', sans-serif;
             background: radial-gradient(circle at center, #0B0B14 0%, #030308 100%);
-            color: #fff; overflow: hidden; touch-action: none;
+            color: #fff;
+            overflow: hidden;
+            touch-action: none;
         }
+
         #gl-canvas {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            z-index: 1; display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            display: block;
         }
+
         #ui-container {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            display: flex; flex-direction: column; justify-content: center;
-            align-items: center; z-index: 10; pointer-events: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            pointer-events: none;
         }
-        .title-group { text-align: center; margin-bottom: 3rem; pointer-events: auto; }
+
+        .title-group {
+            text-align: center;
+            margin-bottom: 3rem;
+            pointer-events: auto;
+        }
+
         h1 {
-            font-size: 3.5rem; font-weight: 700; letter-spacing: 4px;
-            text-transform: uppercase; margin: 0;
+            font-size: 3.5rem;
+            font-weight: 700;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            margin: 0;
             background: linear-gradient(135deg, #E0E4FF 0%, #7681B3 100%);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
-        p.subtitle { margin-top: 0.5rem; font-size: 1.2rem; color: #A0A5C0; letter-spacing: 1.5px; }
+
+        p.subtitle {
+            margin-top: 0.5rem;
+            font-size: 1.2rem;
+            color: #A0A5C0;
+            letter-spacing: 1.5px;
+        }
+
         .mode-buttons {
             display: flex;
             flex-wrap: wrap;
@@ -36,29 +77,47 @@
             gap: 0.9rem;
             pointer-events: auto;
         }
+
         .mode-button {
-            display: inline-flex; align-items: center; justify-content: center;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             padding: 1.2rem 2rem;
-            font-size: 1.2rem; font-weight: 700; letter-spacing: 2px; color: #fff;
-            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 50px; cursor: pointer;
-            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            box-shadow: 0 4px 30px rgba(0,0,0,0.5);
-            transition: all 0.4s cubic-bezier(0.16,1,0.3,1);
+            font-size: 1.2rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #fff;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50px;
+            cursor: pointer;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
         }
+
         .mode-button:hover:not(:disabled) {
-            background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.3);
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
             transform: translateY(-4px) scale(1.02);
-            box-shadow: 0 15px 40px rgba(0,0,0,0.6), 0 0 20px rgba(118,129,179,0.4);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(118, 129, 179, 0.4);
         }
+
         .mode-button:disabled {
             opacity: 0.45;
             cursor: not-allowed;
         }
+
         #status-text {
-            margin-top: 2rem; font-size: 0.9rem; color: rgba(160,165,192,0.6);
-            pointer-events: auto; text-align: center; white-space: pre-line;
+            margin-top: 2rem;
+            font-size: 0.9rem;
+            color: rgba(160, 165, 192, 0.6);
+            pointer-events: auto;
+            text-align: center;
+            white-space: pre-line;
         }
+
         #vr-hud {
             position: fixed;
             left: 0;
@@ -75,6 +134,7 @@
             background: linear-gradient(180deg, rgba(2, 15, 24, 0.08) 0%, rgba(2, 15, 24, 0.55) 100%);
             border-top: 1px solid rgba(0, 229, 255, 0.35);
         }
+
         #vr-hud .hud-grid {
             display: flex;
             justify-content: space-between;
@@ -85,19 +145,23 @@
             padding-top: 0.5rem;
             border-top: 1px solid rgba(0, 229, 255, 0.2);
         }
+
         #vr-hud .hud-block {
             min-width: 14rem;
         }
+
         #vr-hud .hud-label {
             display: block;
             font-size: 0.68rem;
             opacity: 0.75;
             margin-bottom: 0.35rem;
         }
+
         #vr-hud .hud-value {
             font-size: 1rem;
             text-shadow: 0 0 12px rgba(0, 229, 255, 0.5);
         }
+
         #dpad-container {
             position: fixed;
             right: 2rem;
@@ -109,6 +173,7 @@
             grid-template-rows: repeat(3, 60px);
             gap: 0.55rem;
         }
+
         .dpad-btn {
             width: 60px;
             height: 60px;
@@ -126,23 +191,110 @@
             user-select: none;
             touch-action: none;
         }
+
         .dpad-btn:hover,
         .dpad-btn.active {
             background: rgba(255, 255, 255, 0.2);
             border-color: rgba(255, 255, 255, 0.3);
             transform: scale(1.04);
         }
-        #dpad-up { grid-column: 2; grid-row: 1; }
-        #dpad-left { grid-column: 1; grid-row: 2; }
-        #dpad-right { grid-column: 3; grid-row: 2; }
-        #dpad-down { grid-column: 2; grid-row: 3; }
+
+        #dpad-up {
+            grid-column: 2;
+            grid-row: 1;
+        }
+
+        #dpad-left {
+            grid-column: 1;
+            grid-row: 2;
+        }
+
+        #dpad-right {
+            grid-column: 3;
+            grid-row: 2;
+        }
+
+        #dpad-down {
+            grid-column: 2;
+            grid-row: 3;
+        }
+
         @media (pointer: fine) {
             #dpad-container {
                 opacity: 0.72;
             }
         }
+
+        /* ── Easter Egg: Cinematic Overlay ── */
+        #dj-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 2.4s cubic-bezier(0.22, 1, 0.36, 1),
+                visibility 0s linear 2.4s;
+            background: radial-gradient(ellipse at center, rgba(5, 5, 18, 0.85) 0%, rgba(0, 0, 0, 0.92) 100%);
+        }
+
+        #dj-overlay.visible {
+            opacity: 1;
+            visibility: visible;
+            transition: opacity 2.4s cubic-bezier(0.22, 1, 0.36, 1),
+                visibility 0s linear 0s;
+        }
+
+        #dj-overlay .dj-dedication {
+            font-family: 'Cormorant Garamond', 'Georgia', serif;
+            font-size: 1.15rem;
+            font-weight: 400;
+            font-style: italic;
+            color: rgba(200, 205, 230, 0.7);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 1.8rem;
+            opacity: 0;
+            transform: translateY(12px);
+            animation: dj-line-fade 2s ease-out 0.6s forwards;
+        }
+
+        #dj-overlay .dj-line {
+            font-family: 'Cormorant Garamond', 'Georgia', serif;
+            font-size: 2rem;
+            font-weight: 400;
+            color: rgba(220, 225, 245, 0.88);
+            line-height: 2.1;
+            letter-spacing: 0.04em;
+            text-align: center;
+            opacity: 0;
+            transform: translateY(18px);
+        }
+
+        #dj-overlay .dj-line:nth-child(2) {
+            animation: dj-line-fade 2.2s ease-out 1.4s forwards;
+        }
+
+        #dj-overlay .dj-line:nth-child(3) {
+            animation: dj-line-fade 2.2s ease-out 2.2s forwards;
+        }
+
+        @keyframes dj-line-fade {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
     </style>
 </head>
+
 <body>
     <canvas id="gl-canvas"></canvas>
     <div id="ui-container">
@@ -164,7 +316,7 @@
             </div>
             <div class="hud-block">
                 <span class="hud-label">Coordinates</span>
-                <span id="hud-coords" class="hud-value">0.0  0.0  0.0</span>
+                <span id="hud-coords" class="hud-value">0.0 0.0 0.0</span>
             </div>
         </div>
     </div>
@@ -175,9 +327,17 @@
         <button id="dpad-down" class="dpad-btn" aria-label="Move Backward">▼</button>
     </div>
 
+    <!-- Easter Egg: Cinematic Reveal Overlay -->
+    <div id="dj-overlay">
+        <p class="dj-dedication">To Dhriti,</p>
+        <p class="dj-line">The moon pulls the ocean, all the time.</p>
+        <p class="dj-line">And from today she sings for you.</p>
+    </div>
+
     <!-- Basis Universal WASM Transcoder (from local build, no 3rd-party dependency) -->
     <script src="lib/basis_transcoder.js"></script>
 
     <script type="module" src="engine.js"></script>
 </body>
+
 </html>

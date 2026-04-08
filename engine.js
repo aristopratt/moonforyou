@@ -468,6 +468,21 @@ const MAX_PITCH = (89 * Math.PI) / 180;
 const locomotion = { x: 0, y: 0, z: 0 };   // accumulated world offset
 const MOVE_SPEED = 0.04;                    // metres per frame at full stick
 
+// ── Easter Egg: Cinematic Dolly State ────────────────────────
+const easterEggAudio = new Audio('thousand_years.mp3');
+easterEggAudio.preload = 'auto';
+
+const cinematic = {
+    active:    false,   // true while the camera dolly is in progress
+    finished:  false,   // true after the sequence has fully played
+    startTime: 0,
+    duration:  4000,    // 4 seconds in ms
+    startPos:  new Float32Array(3),
+    endPos:    new Float32Array(3),
+    startYaw:  0,
+    startPitch:0,
+};
+
 function log(msg) {
     console.log(msg);
     const el = document.getElementById('status-text');
@@ -608,6 +623,7 @@ async function initEngine() {
 
     document.addEventListener('mousemove', (e) => {
         if (document.pointerLockElement !== canvas || xrSession) return;
+        if (cinematic.active || cinematic.finished) return;
         yaw -= e.movementX * MOUSE_LOOK_SENSITIVITY;
         pitch -= e.movementY * MOUSE_LOOK_SENSITIVITY;
         if (pitch > MAX_PITCH) pitch = MAX_PITCH;
@@ -662,6 +678,20 @@ async function initEngine() {
             canvas.requestPointerLock();
         });
     }
+
+    // ── Easter Egg: Cmd/Ctrl + J listener ────────────────────
+    window.addEventListener('keydown', (e) => {
+        // Trigger only on Cmd+J (Mac) or Ctrl+J (Win/Linux)
+        if (e.code === 'KeyJ' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            if (cinematic.active || cinematic.finished) return;
+            startCinematicDolly();
+        }
+        // Escape dismisses the overlay + stops audio after reveal
+        if (e.code === 'Escape' && cinematic.finished) {
+            dismissCinematic();
+        }
+    });
 
     // --- Start 2D fallback loop immediately (shows grid sphere) ---
     window.addEventListener('resize', resizeCanvas);
@@ -800,7 +830,7 @@ function render2D(time) {
     const moveForward = (keyState.KeyW || keyState.ArrowUp ? 1 : 0) - (keyState.KeyS || keyState.ArrowDown ? 1 : 0);
     const moveRight = (keyState.KeyD || keyState.ArrowRight ? 1 : 0) - (keyState.KeyA || keyState.ArrowLeft ? 1 : 0);
     const moveLen = Math.hypot(moveForward, moveRight);
-    if (moveLen > 0) {
+    if (moveLen > 0 && !cinematic.active && !cinematic.finished) {
         const speed = (NON_VR_FLY_SPEED * dt) / moveLen;
         cameraPosition[0] += (forwardX * moveForward + rightX * moveRight) * speed;
         cameraPosition[1] += (forwardY * moveForward + rightY * moveRight) * speed;
@@ -847,6 +877,24 @@ function render2D(time) {
         const altitude = Math.sqrt(adx * adx + ady * ady + adz * adz) - CFG.sphereRadius;
         if (hudAltitudeEl) hudAltitudeEl.textContent = altitude.toFixed(2);
         if (hudCoordsEl) hudCoordsEl.textContent = `${cameraPosition[0].toFixed(2)}  ${cameraPosition[1].toFixed(2)}  ${cameraPosition[2].toFixed(2)}`;
+    }
+
+    // ── Easter Egg: Cinematic camera dolly update ─────────
+    if (cinematic.active) {
+        const elapsed = time - cinematic.startTime;
+        const t = Math.min(elapsed / cinematic.duration, 1.0);
+        // Smoothstep: 3t² − 2t³  (ease in-out)
+        const s = t * t * (3.0 - 2.0 * t);
+
+        cameraPosition[0] = cinematic.startPos[0] + (cinematic.endPos[0] - cinematic.startPos[0]) * s;
+        cameraPosition[1] = cinematic.startPos[1] + (cinematic.endPos[1] - cinematic.startPos[1]) * s;
+        cameraPosition[2] = cinematic.startPos[2] + (cinematic.endPos[2] - cinematic.startPos[2]) * s;
+
+        if (t >= 1.0) {
+            cinematic.active = false;
+            cinematic.finished = true;
+            onCinematicComplete();
+        }
     }
 
     raf = requestAnimationFrame(render2D);
@@ -945,6 +993,107 @@ function resizeCanvas() {
     if (c.width !== window.innerWidth || c.height !== window.innerHeight) {
         c.width = window.innerWidth; c.height = window.innerHeight;
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 11. EASTER EGG — CINEMATIC DOLLY + REVEAL
+// ═══════════════════════════════════════════════════════════════
+
+function startCinematicDolly() {
+    // Compute the current forward look-vector from yaw/pitch
+    const cosPitch = Math.cos(pitch);
+    const sinPitch = Math.sin(pitch);
+    const cosYaw   = Math.cos(yaw);
+    const sinYaw   = Math.sin(yaw);
+    const fwdX = cosPitch * sinYaw;
+    const fwdY = sinPitch;
+    const fwdZ = cosPitch * cosYaw;
+
+    // Vector from camera to moon center
+    const toMoonX = CFG.spherePos[0] - cameraPosition[0];
+    const toMoonY = CFG.spherePos[1] - cameraPosition[1];
+    const toMoonZ = CFG.spherePos[2] - cameraPosition[2];
+    const distToMoon = Math.sqrt(toMoonX * toMoonX + toMoonY * toMoonY + toMoonZ * toMoonZ);
+
+    // Travel 20% of the remaining distance along the forward look-vector
+    const dollyDist = distToMoon * 0.2;
+
+    cinematic.startPos[0] = cameraPosition[0];
+    cinematic.startPos[1] = cameraPosition[1];
+    cinematic.startPos[2] = cameraPosition[2];
+    cinematic.endPos[0]   = cameraPosition[0] + fwdX * dollyDist;
+    cinematic.endPos[1]   = cameraPosition[1] + fwdY * dollyDist;
+    cinematic.endPos[2]   = cameraPosition[2] + fwdZ * dollyDist;
+    cinematic.startYaw    = yaw;
+    cinematic.startPitch  = pitch;
+
+    // Freeze normal controls
+    cinematic.active   = true;
+    cinematic.finished = false;
+    cinematic.startTime = performance.now();
+
+    // Dim the HUD during the cinematic
+    if (hudRoot) hudRoot.style.opacity = '0.3';
+
+    // Reset all movement keys so the ship doesn't drift
+    for (const k of Object.keys(keyState)) keyState[k] = false;
+
+    log('🎬 Cinematic sequence initiated…');
+}
+
+function onCinematicComplete() {
+    // Fade in the overlay
+    const overlay = document.getElementById('dj-overlay');
+    if (overlay) {
+        // Force a reflow so the CSS animation keyframes restart cleanly
+        overlay.classList.remove('visible');
+        void overlay.offsetWidth;
+        overlay.classList.add('visible');
+    }
+
+    // Play the audio track
+    easterEggAudio.currentTime = 0;
+    easterEggAudio.play().catch((err) => {
+        console.warn('Easter egg audio blocked by browser autoplay policy:', err.message);
+    });
+
+    // Auto-fade text after 10 seconds (audio keeps playing)
+    cinematic._dismissTimer = setTimeout(() => {
+        if (cinematic.finished) {
+            const ov = document.getElementById('dj-overlay');
+            if (ov) ov.classList.remove('visible');
+            if (hudRoot) hudRoot.style.opacity = '1';
+            cinematic.finished = false;
+            cinematic._dismissTimer = null;
+        }
+    }, 10000);
+
+    log('🌙 The moon sings for you.');
+}
+
+function dismissCinematic() {
+    // Cancel auto-dismiss timer if user pressed Escape early
+    if (cinematic._dismissTimer) {
+        clearTimeout(cinematic._dismissTimer);
+        cinematic._dismissTimer = null;
+    }
+
+    // Fade out the overlay
+    const overlay = document.getElementById('dj-overlay');
+    if (overlay) overlay.classList.remove('visible');
+
+    // Stop the audio gracefully
+    easterEggAudio.pause();
+    easterEggAudio.currentTime = 0;
+
+    // Restore HUD
+    if (hudRoot) hudRoot.style.opacity = '1';
+
+    // Reset cinematic state so it can be re-triggered
+    cinematic.active   = false;
+    cinematic.finished = false;
+
+    log('Ready — flight controls restored.');
 }
 
 // ═══════════════════════════════════════════════════════════════
