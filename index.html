@@ -225,6 +225,120 @@
             }
         }
 
+        /* ── Mission Briefing Overlay ── */
+        #mission-briefing {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            transition: opacity 1.5s ease-out, visibility 1.5s ease-out;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 2rem;
+            box-sizing: border-box;
+        }
+
+        #mission-briefing.fade-out {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .briefing-content {
+            max-width: 800px;
+            width: 100%;
+            background: rgba(10, 15, 20, 0.6);
+            border: 1px solid rgba(0, 229, 255, 0.3);
+            padding: 2.5rem;
+            box-shadow: 0 0 40px rgba(0, 229, 255, 0.08);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+
+        .briefing-title {
+            color: #00e5ff;
+            font-size: 1.6rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid rgba(0, 229, 255, 0.3);
+            padding-bottom: 1rem;
+            text-align: center;
+            text-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
+        }
+
+        .briefing-section {
+            margin-bottom: 2rem;
+        }
+
+        .briefing-section h2 {
+            color: #fff;
+            font-size: 1.1rem;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            border-left: 3px solid #00e5ff;
+            padding-left: 10px;
+        }
+
+        .briefing-text {
+            color: #a0a5c0;
+            line-height: 1.7;
+            margin-bottom: 1rem;
+            font-size: 0.95rem;
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 120px 1fr;
+            gap: 1.2rem;
+            color: #a0a5c0;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        .control-label {
+            color: #00e5ff;
+            font-weight: bold;
+            text-align: right;
+            opacity: 0.9;
+        }
+
+        #engage-button {
+            display: block;
+            width: 100%;
+            padding: 1.2rem;
+            background: rgba(0, 229, 255, 0.05);
+            border: 1px solid rgba(0, 229, 255, 0.5);
+            color: #00e5ff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1.25rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 2.5rem;
+        }
+
+        #engage-button:hover {
+            background: rgba(0, 229, 255, 0.2);
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        #engage-button:active {
+            transform: translateY(1px);
+        }
+
         /* ── Easter Egg: Cinematic Overlay ── */
         #dj-overlay {
             position: fixed;
@@ -325,6 +439,37 @@
         <button id="dpad-left" class="dpad-btn" aria-label="Move Left">◀</button>
         <button id="dpad-right" class="dpad-btn" aria-label="Move Right">▶</button>
         <button id="dpad-down" class="dpad-btn" aria-label="Move Backward">▼</button>
+    </div>
+
+    <!-- Main Mission Briefing Overlay -->
+    <div id="mission-briefing">
+        <div class="briefing-content">
+            <div class="briefing-title">LUNAR ENGINE: PHYSICALLY BASED SIMULATION</div>
+
+            <div class="briefing-section">
+                <h2>Project Overview</h2>
+                <div class="briefing-text">A bare-metal, zero-dependency WebGL2 physics and rendering engine.</div>
+                <div class="briefing-text">Data Sources: NASA Lunar Reconnaissance Orbiter (LRO) elevation and albedo
+                    maps (dynamically compressed via Basis Universal), and 9,110 procedurally plotted stars from the
+                    Yale Bright Star Catalog.</div>
+            </div>
+
+            <div class="briefing-section">
+                <h2>Flight Controls</h2>
+                <div class="controls-grid">
+                    <div class="control-label">Desktop:</div>
+                    <div>Click to engage Pointer Lock. Mouse to look. WASD or Arrow Keys to thrust/fly.</div>
+
+                    <div class="control-label">VR:</div>
+                    <div>Click 'Enter VR'. Use Left/Right Thumbsticks for 6DoF flight.</div>
+
+                    <div class="control-label">Mobile:</div>
+                    <div>Physical gyroscope to look. On-screen D-Pad to thrust.</div>
+                </div>
+            </div>
+
+            <button id="engage-button">ENGAGE FLIGHT SYSTEMS</button>
+        </div>
     </div>
 
     <!-- Easter Egg: Cinematic Reveal Overlay -->

@@ -679,6 +679,25 @@ async function initEngine() {
         });
     }
 
+    // ── Mission Briefing Overlay Listener ────────────────────
+    const missionBriefing = document.getElementById('mission-briefing');
+    const engageBtn = document.getElementById('engage-button');
+    if (missionBriefing && engageBtn) {
+        engageBtn.addEventListener('click', () => {
+            initSpacecraftAudio();
+            if (window.matchMedia("(pointer: fine)").matches) {
+                canvas.requestPointerLock();
+                flightActive = true;
+            } else {
+                flightActive = true;
+                document.getElementById('dpad-container').style.display = 'grid';
+            }
+            missionBriefing.classList.add('fade-out');
+            if (uiContainer) uiContainer.style.display = 'none';
+            if (hudRoot) hudRoot.style.display = 'block';
+        });
+    }
+
     // ── Easter Egg: Cmd/Ctrl + J listener ────────────────────
     window.addEventListener('keydown', (e) => {
         // Trigger only on Cmd+J (Mac) or Ctrl+J (Win/Linux)
