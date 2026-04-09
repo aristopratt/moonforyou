@@ -12,10 +12,21 @@ const CFG = {
     sphereRadius: 1.0,
     sphereSegments: 64,
     spherePos: [0.0, 0.0, -3.0],
-    sunDir: [0.6, 0.2, -0.5],      // normalized in shader — dramatic terminator
+    sunDir: [0.6, 0.2, -0.5],      // initial direction — now overridden by God Clock
     assets: 'assets/',
     transcoderPath: 'lib/',
 };
+
+// ═══════════════════════════════════════════════════════════════
+// 1b. GOD CLOCK STATE
+// ═══════════════════════════════════════════════════════════════
+let timeScale = 0.005;       // ~Real-time slow crawl
+const INITIAL_SUN_ANGLE = Math.atan2(-0.5, 0.6);
+let sunAngle  = INITIAL_SUN_ANGLE;  // initial angle matching original sunDir XZ
+const GOD_CLOCK_NORMAL   = 0.005;
+const GOD_CLOCK_WARP     = (2 * Math.PI) / 44.295; // 1 lunar cycle (29.53 days) takes ~44.3 seconds
+// Elevation above XZ plane for the sun orbit (slight tilt for dramatic terminator)
+const SUN_ELEVATION      = 0.2;
 
 // ═══════════════════════════════════════════════════════════════
 // 2. MATH UTILITIES
@@ -140,8 +151,8 @@ in mat3 vTBN;
 
 uniform sampler2D uAlbedo;
 uniform sampler2D uNormal;
-uniform vec3  uSunDir;
-uniform float uTexReady;      // 1.0 = textured, 0.0 = fallback grid
+uniform vec3  u_dynamicSunDirection;   // God Clock — rotated each frame
+uniform float uTexReady;               // 1.0 = textured, 0.0 = fallback grid
 
 out vec4 oColor;
 
@@ -162,9 +173,14 @@ void main(){
         albedo = mix(albedo, vec3(0.1,0.75,0.9), g);
     }
 
-    // Lambertian diffuse
-    float NdotL = max(dot(N, uSunDir), 0.0);
-    vec3 c = albedo * (0.025 + NdotL);
+    // Lambertian diffuse — dynamic sun from God Clock
+    vec3 L = normalize(u_dynamicSunDirection);
+    float NdotL = max(dot(N, L), 0.0);
+
+    // Void persistence: near-zero ambient so the dark side is absolute deep-void black.
+    // The 0.005 ambient prevents pure mathematical zero (GPU precision) while remaining
+    // visually indistinguishable from true black — brutal, stark terminator shadows.
+    vec3 c = albedo * (0.005 + NdotL);
 
     // Reinhard tonemap + gamma
     c = c / (c + 1.0);
@@ -443,11 +459,11 @@ function loadPNGTexture(gl, url) {
 // 6. ENGINE STATE
 // ═══════════════════════════════════════════════════════════════
 let gl, program, vao, idxCount;
-let uModel, uView, uProj, uSunDir, uTexReady, uAlbedoLoc, uNormalLoc;
+let uModel, uView, uProj, uDynamicSunDir, uTexReady, uAlbedoLoc, uNormalLoc;
 let albedoTex = null, normalTex = null, texturesLoaded = false;
 let xrSession = null, xrRefSpace = null, raf = null;
 let starProgram, starVao, starCount, starBuf, uStarModel, uStarView, uStarProj, uStarPointScale;
-let audioCtx = null, humOsc = null, humGain = null;
+let audioCtx = null, humOsc = null, humGain = null, beaconPanner = null, beaconAudioElement = null;
 let hudRoot = null, hudAltitudeEl = null, hudCoordsEl = null;
 let uiContainer = null;
 let flightModeBtn = null;
@@ -456,6 +472,8 @@ const cameraPosition = new Float32Array([0.0, 0.0, 0.0]);
 let pitch = 0.0;
 let yaw = Math.PI;
 let previousFrameTime = 0.0;
+let godClockActive = false;
+const savedCamera = { pos: new Float32Array(3), pitch: 0.0, yaw: 0.0 };
 const keyState = {
     KeyW: false, KeyA: false, KeyS: false, KeyD: false,
     ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false,
@@ -489,12 +507,32 @@ function log(msg) {
     if (el) el.textContent = msg;
 }
 
+const apollo11LocalPos = (function() {
+    // The Apollo 11 landing site is at 0.6740° N, 23.4720° E.
+    const latRad = 0.6740 * (Math.PI / 180);
+    const lonRad = 23.4720 * (Math.PI / 180);
+
+    const th = (Math.PI / 2) - latRad;
+    const ph = Math.PI + lonRad;
+
+    const r = CFG.sphereRadius;
+    return new Float32Array([
+        r * Math.cos(ph) * Math.sin(th),
+        r * Math.cos(th),
+        r * Math.sin(ph) * Math.sin(th)
+    ]);
+})();
+
 function initSpacecraftAudio() {
-    if (audioCtx) return;
+    if (audioCtx) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        return;
+    }
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
 
     audioCtx = new AudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
     humOsc = audioCtx.createOscillator();
     const humLowpass = audioCtx.createBiquadFilter();
     humGain = audioCtx.createGain();
@@ -509,6 +547,49 @@ function initSpacecraftAudio() {
     humLowpass.connect(humGain);
     humGain.connect(audioCtx.destination);
     humOsc.start();
+
+    // ── Phase 7: Tranquility Beacon ──────────────────────
+    beaconPanner = audioCtx.createPanner();
+    beaconPanner.panningModel = 'HRTF';
+    beaconPanner.distanceModel = 'exponential';
+    // Softened parameters so the user can actually hear it from orbital distance
+    beaconPanner.refDistance = 1.0;  
+    beaconPanner.rolloffFactor = 0.4; 
+
+    // Initial position assigned here; dynamic update occurs in bindScene
+    const [tx, ty, tz] = CFG.spherePos;
+    if (beaconPanner.positionX) {
+        beaconPanner.positionX.value = tx;
+        beaconPanner.positionY.value = ty;
+        beaconPanner.positionZ.value = tz;
+    } else {
+        beaconPanner.setPosition(tx, ty, tz);
+    }
+    beaconPanner.connect(audioCtx.destination);
+
+    if (!beaconAudioElement) {
+        beaconAudioElement = new Audio('tranquility.mp3');
+        beaconAudioElement.preload = 'auto';
+        beaconAudioElement.loop = false;
+        beaconAudioElement.crossOrigin = 'anonymous';
+        
+        const commsEl = document.getElementById('hud-comms');
+        beaconAudioElement.addEventListener('playing', () => {
+            if (commsEl) commsEl.style.display = 'block';
+        });
+        beaconAudioElement.addEventListener('ended', () => {
+            if (commsEl) commsEl.style.display = 'none';
+        });
+
+        const source = audioCtx.createMediaElementSource(beaconAudioElement);
+        source.connect(beaconPanner);
+    }
+    
+    beaconAudioElement.play().then(() => {
+        log('✓ Tranquility Beacon transmitting from Apollo 11 site.');
+    }).catch(err => {
+        log('⚠ Tranquility Beacon audio failed: ' + err.message);
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -546,7 +627,7 @@ async function initEngine() {
     uModel    = gl.getUniformLocation(program, 'uModel');
     uView     = gl.getUniformLocation(program, 'uView');
     uProj     = gl.getUniformLocation(program, 'uProj');
-    uSunDir   = gl.getUniformLocation(program, 'uSunDir');
+    uDynamicSunDir = gl.getUniformLocation(program, 'u_dynamicSunDirection');
     uTexReady = gl.getUniformLocation(program, 'uTexReady');
     uNormalLoc = gl.getUniformLocation(program, 'uNormal');
     uAlbedoLoc = gl.getUniformLocation(program, 'uAlbedo');
@@ -623,7 +704,7 @@ async function initEngine() {
 
     document.addEventListener('mousemove', (e) => {
         if (document.pointerLockElement !== canvas || xrSession) return;
-        if (cinematic.active || cinematic.finished) return;
+        if (cinematic.active || cinematic.finished || godClockActive) return;
         yaw -= e.movementX * MOUSE_LOOK_SENSITIVITY;
         pitch -= e.movementY * MOUSE_LOOK_SENSITIVITY;
         if (pitch > MAX_PITCH) pitch = MAX_PITCH;
@@ -632,14 +713,58 @@ async function initEngine() {
 
     const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
     window.addEventListener('keydown', (e) => {
-        if (!movementKeys.has(e.code)) return;
-        keyState[e.code] = true;
-        e.preventDefault();
+        if (movementKeys.has(e.code)) {
+            keyState[e.code] = true;
+            e.preventDefault();
+        }
+        // ── God Clock: Shift = warp time ──────────────────
+        if (!godClockActive && (e.code === 'ShiftLeft' || e.code === 'ShiftRight')) {
+            godClockActive = true;
+            timeScale = GOD_CLOCK_WARP;
+            // Lock Camera
+            savedCamera.pos.set(cameraPosition);
+            savedCamera.pitch = pitch;
+            savedCamera.yaw = yaw;
+            cameraPosition[0] = 0.0;
+            cameraPosition[1] = 0.0;
+            cameraPosition[2] = 4.0;
+            pitch = 0.0;
+            yaw = Math.PI;
+
+            const indicator = document.getElementById('god-clock-indicator');
+            if (indicator) {
+                indicator.style.display = 'flex';
+                indicator.classList.add('active');
+                const speedEl = indicator.querySelector('.clock-speed');
+                if (speedEl) speedEl.textContent = '1 DAY = 1.5 SEC';
+            }
+            const phaseDisplay = document.getElementById('phase-display');
+            if (phaseDisplay) phaseDisplay.style.display = 'block';
+        }
     });
     window.addEventListener('keyup', (e) => {
-        if (!movementKeys.has(e.code)) return;
-        keyState[e.code] = false;
-        e.preventDefault();
+        if (movementKeys.has(e.code)) {
+            keyState[e.code] = false;
+            e.preventDefault();
+        }
+        // ── God Clock: release Shift = return to real-time ──
+        if (godClockActive && (e.code === 'ShiftLeft' || e.code === 'ShiftRight')) {
+            godClockActive = false;
+            timeScale = GOD_CLOCK_NORMAL;
+            // Restore Camera
+            cameraPosition.set(savedCamera.pos);
+            pitch = savedCamera.pitch;
+            yaw = savedCamera.yaw;
+
+            const indicator = document.getElementById('god-clock-indicator');
+            if (indicator) {
+                indicator.classList.remove('active');
+                const speedEl = indicator.querySelector('.clock-speed');
+                if (speedEl) speedEl.textContent = 'REAL-TIME';
+            }
+            const phaseDisplay = document.getElementById('phase-display');
+            if (phaseDisplay) phaseDisplay.style.display = 'none';
+        }
     });
 
     const bindDPadButton = (buttonId, keyCode) => {
@@ -794,6 +919,12 @@ function exitVR() {
         audioCtx = null;
         humOsc = null;
         humGain = null;
+        beaconPanner = null;
+    }
+    if (beaconAudioElement) {
+        beaconAudioElement.pause();
+        beaconAudioElement.currentTime = 0;
+        beaconAudioElement = null;
     }
     resizeCanvas();
     raf = requestAnimationFrame(render2D);
@@ -802,13 +933,56 @@ function exitVR() {
 // ═══════════════════════════════════════════════════════════════
 // 9. RENDER HELPERS
 // ═══════════════════════════════════════════════════════════════
-function bindScene(time) {
+/** Compute the God Clock's dynamic sun direction by rotating around Y-axis. */
+function computeDynamicSunDirection(sunAngle) {
+    // Rotate a unit vector in the XZ plane by sunAngle, with fixed Y elevation.
+    // This simulates the sun orbiting the Moon's polar (Y) axis.
+    const cosA = Math.cos(sunAngle);
+    const sinA = Math.sin(sunAngle);
+    // Direction FROM the moon TOWARD the sun (world space)
+    const x = cosA;
+    const y = SUN_ELEVATION;  // slight elevation for dramatic terminator rake
+    const z = sinA;
+    const len = Math.sqrt(x * x + y * y + z * z);
+    return [x / len, y / len, z / len];
+}
+
+function bindScene(time, deltaTime) {
     gl.useProgram(program);
     gl.bindVertexArray(vao);
 
     const [tx, ty, tz] = CFG.spherePos;
     gl.uniformMatrix4fv(uModel, false, modelMatrix(time, tx, ty, tz));
-    gl.uniform3f(uSunDir, ...normalize3(CFG.sunDir));
+
+    // Update Apollo 11 audio beacon position so it rotates dynamically with the moon
+    if (beaconPanner) {
+        const a = time * 0.00015;
+        const c = Math.cos(a), s = Math.sin(a);
+        const lx = apollo11LocalPos[0];
+        const ly = apollo11LocalPos[1];
+        const lz = apollo11LocalPos[2];
+        
+        const worldX = lx * c - lz * s + tx;
+        const worldY = ly + ty;
+        const worldZ = lx * s + lz * c + tz;
+        
+        if (beaconPanner.positionX) {
+            beaconPanner.positionX.value = worldX;
+            beaconPanner.positionY.value = worldY;
+            beaconPanner.positionZ.value = worldZ;
+            // Also log to console periodically if nearby, for user visibility:
+            // if (Math.random() < 0.005) { console.log(`Beacon WorldPos: ${worldX.toFixed(2)}, ${worldY.toFixed(2)}, ${worldZ.toFixed(2)}`); }
+        } else {
+            beaconPanner.setPosition(worldX, worldY, worldZ);
+        }
+    }
+
+    // ── God Clock: advance sun angle by timeScale * deltaTime ──
+    sunAngle += timeScale * deltaTime * 0.001;  // base angular velocity ~1 rad/sec
+
+    const dynamicSun = computeDynamicSunDirection(sunAngle);
+    gl.uniform3f(uDynamicSunDir, dynamicSun[0], dynamicSun[1], dynamicSun[2]);
+
     gl.uniform1f(uTexReady, texturesLoaded ? 1.0 : 0.0);
 
     // Bind textures
@@ -849,7 +1023,7 @@ function render2D(time) {
     const moveForward = (keyState.KeyW || keyState.ArrowUp ? 1 : 0) - (keyState.KeyS || keyState.ArrowDown ? 1 : 0);
     const moveRight = (keyState.KeyD || keyState.ArrowRight ? 1 : 0) - (keyState.KeyA || keyState.ArrowLeft ? 1 : 0);
     const moveLen = Math.hypot(moveForward, moveRight);
-    if (moveLen > 0 && !cinematic.active && !cinematic.finished) {
+    if (moveLen > 0 && !cinematic.active && !cinematic.finished && !godClockActive) {
         const speed = (NON_VR_FLY_SPEED * dt) / moveLen;
         cameraPosition[0] += (forwardX * moveForward + rightX * moveRight) * speed;
         cameraPosition[1] += (forwardY * moveForward + rightY * moveRight) * speed;
@@ -863,18 +1037,46 @@ function render2D(time) {
     ];
     const viewMatrix = lookAtMatrix(cameraPosition, lookTarget, [0, 1, 0]);
 
+    if (audioCtx) {
+        const listener = audioCtx.listener;
+        if (listener.positionX) {
+            listener.positionX.value = cameraPosition[0];
+            listener.positionY.value = cameraPosition[1];
+            listener.positionZ.value = cameraPosition[2];
+            listener.forwardX.value = forwardX;
+            listener.forwardY.value = forwardY;
+            listener.forwardZ.value = forwardZ;
+            listener.upX.value = 0;
+            listener.upY.value = 1;
+            listener.upZ.value = 0;
+        } else {
+            listener.setPosition(cameraPosition[0], cameraPosition[1], cameraPosition[2]);
+            listener.setOrientation(forwardX, forwardY, forwardZ, 0, 1, 0);
+        }
+    }
+
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     gl.clearColor(0.01, 0.01, 0.02, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const proj = perspectiveMatrix(Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 100);
 
     // --- Draw Stars (opaque dots — standard blend, no additive bloom) ---
+    const starAngle = sunAngle - INITIAL_SUN_ANGLE;
+    const cSa = Math.cos(starAngle), sSa = Math.sin(starAngle);
+    // Y-axis rotation matrix matching God Clock
+    const starModel = new Float32Array([
+        cSa, 0, sSa, 0,
+        0,   1, 0,   0,
+       -sSa, 0, cSa, 0,
+        0,   0, 0,   1
+    ]);
+
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.useProgram(starProgram);
     gl.bindVertexArray(starVao);
     gl.uniformMatrix4fv(uStarProj, false, proj);
     gl.uniformMatrix4fv(uStarView, false, viewMatrix);
-    gl.uniformMatrix4fv(uStarModel, false, IDENTITY);
+    gl.uniformMatrix4fv(uStarModel, false, starModel);
     gl.uniform1f(uStarPointScale, starPointScaleForViewport(gl.canvas.height, proj[5]));
 
     gl.depthMask(false);
@@ -883,7 +1085,7 @@ function render2D(time) {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     // --- Draw Moon ---
-    bindScene(time);
+    bindScene(time, dt * 1000);  // pass delta in ms for God Clock
     gl.uniformMatrix4fv(uProj, false, proj);
     gl.uniformMatrix4fv(uView, false, viewMatrix);
     gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
@@ -916,6 +1118,21 @@ function render2D(time) {
         }
     }
 
+    // ── Phase Simulator: UI Update ────────
+    if (godClockActive) {
+        let a = sunAngle % (2 * Math.PI);
+        if (a < 0) a += 2 * Math.PI;
+        // Shift angle so New Moon (+Z Sun pos) is 0
+        const phaseAngle = (a + Math.PI / 2) % (2 * Math.PI);
+        const cycleIndex = Math.round((phaseAngle / (2 * Math.PI)) * 8) % 8;
+        const phases = [
+            "NEW MOON", "WAXING CRESCENT", "FIRST QUARTER", "WAXING GIBBOUS",
+            "FULL MOON", "WANING GIBBOUS", "THIRD QUARTER", "WANING CRESCENT"
+        ];
+        const phaseDisplay = document.getElementById('phase-display');
+        if (phaseDisplay) phaseDisplay.innerText = phases[cycleIndex];
+    }
+
     raf = requestAnimationFrame(render2D);
 }
 
@@ -935,7 +1152,7 @@ function renderXR(time, frame) {
         const dx = Math.abs(ax) > 0.15 ? ax : 0;
         const dy = Math.abs(ay) > 0.15 ? ay : 0;
 
-        if (dx !== 0 || dy !== 0) {
+        if ((dx !== 0 || dy !== 0) && !godClockActive) {
             // Get the viewer orientation to move relative to gaze
             const tempPose = frame.getViewerPose(xrRefSpace);
             if (tempPose) {
@@ -972,12 +1189,21 @@ function renderXR(time, frame) {
         gl.viewport(vp.x, vp.y, vp.width, vp.height);
 
         // --- Draw Stars (inertial sky; head / craft motion via view matrix) ---
+        const starAngle = sunAngle - INITIAL_SUN_ANGLE;
+        const cSa = Math.cos(starAngle), sSa = Math.sin(starAngle);
+        const starModel = new Float32Array([
+            cSa, 0, sSa, 0,
+            0,   1, 0,   0,
+           -sSa, 0, cSa, 0,
+            0,   0, 0,   1
+        ]);
+
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         gl.useProgram(starProgram);
         gl.bindVertexArray(starVao);
         gl.uniformMatrix4fv(uStarProj, false, view.projectionMatrix);
         gl.uniformMatrix4fv(uStarView, false, view.transform.inverse.matrix);
-        gl.uniformMatrix4fv(uStarModel, false, IDENTITY);
+        gl.uniformMatrix4fv(uStarModel, false, starModel);
         const py = view.projectionMatrix[5];
         gl.uniform1f(uStarPointScale, starPointScaleForViewport(vp.height, py));
 
@@ -987,7 +1213,7 @@ function renderXR(time, frame) {
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
         // --- Draw Moon ---
-        bindScene(time);
+        bindScene(time, 16.0);  // ~60fps assumed delta for XR God Clock
         gl.uniformMatrix4fv(uProj, false, view.projectionMatrix);
         gl.uniformMatrix4fv(uView, false, view.transform.inverse.matrix);
         gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
@@ -996,6 +1222,28 @@ function renderXR(time, frame) {
     const cameraX = pose.transform.position.x + locomotion.x;
     const cameraY = pose.transform.position.y + locomotion.y;
     const cameraZ = pose.transform.position.z + locomotion.z;
+
+    if (audioCtx) {
+        const m = pose.transform.matrix;
+        const fwdX = -m[8], fwdY = -m[9], fwdZ = -m[10];
+        const upX = m[4], upY = m[5], upZ = m[6];
+        const listener = audioCtx.listener;
+        if (listener.positionX) {
+            listener.positionX.value = cameraX;
+            listener.positionY.value = cameraY;
+            listener.positionZ.value = cameraZ;
+            listener.forwardX.value = fwdX;
+            listener.forwardY.value = fwdY;
+            listener.forwardZ.value = fwdZ;
+            listener.upX.value = upX;
+            listener.upY.value = upY;
+            listener.upZ.value = upZ;
+        } else {
+            listener.setPosition(cameraX, cameraY, cameraZ);
+            listener.setOrientation(fwdX, fwdY, fwdZ, upX, upY, upZ);
+        }
+    }
+
     const [moonX, moonY, moonZ] = CFG.spherePos;
     const dx = cameraX - moonX;
     const dy = cameraY - moonY;

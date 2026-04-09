@@ -406,6 +406,67 @@
                 transform: translateY(0);
             }
         }
+
+        /* ── God Clock: Time Warp Indicator ── */
+        #god-clock-indicator {
+            position: fixed;
+            top: 1.5rem;
+            right: 1.5rem;
+            z-index: 110;
+            display: none;
+            align-items: center;
+            gap: 0.6rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(0, 229, 255, 0.5);
+            padding: 0.5rem 1rem;
+            border: 1px solid rgba(0, 229, 255, 0.15);
+            border-radius: 6px;
+            background: rgba(2, 15, 24, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+
+        #god-clock-indicator .clock-icon {
+            font-size: 1.1rem;
+        }
+
+        #god-clock-indicator .clock-label {
+            opacity: 0.7;
+        }
+
+        #god-clock-indicator .clock-speed {
+            color: rgba(0, 229, 255, 0.6);
+            font-weight: bold;
+        }
+
+        /* Active (Shift held) — warp glow */
+        #god-clock-indicator.active {
+            color: #00e5ff;
+            border-color: rgba(0, 229, 255, 0.6);
+            background: rgba(0, 229, 255, 0.08);
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.2), inset 0 0 15px rgba(0, 229, 255, 0.05);
+            animation: god-clock-pulse 0.6s ease-in-out infinite alternate;
+        }
+
+        #god-clock-indicator.active .clock-speed {
+            color: #00e5ff;
+            text-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+        }
+
+        @keyframes god-clock-pulse {
+            from {
+                box-shadow: 0 0 20px rgba(0, 229, 255, 0.2), inset 0 0 15px rgba(0, 229, 255, 0.05);
+            }
+
+            to {
+                box-shadow: 0 0 35px rgba(0, 229, 255, 0.35), inset 0 0 20px rgba(0, 229, 255, 0.1);
+            }
+        }
     </style>
 </head>
 
@@ -432,7 +493,25 @@
                 <span class="hud-label">Coordinates</span>
                 <span id="hud-coords" class="hud-value">0.0 0.0 0.0</span>
             </div>
+            <div class="hud-block" id="hud-comms" style="display: none;">
+                <span class="hud-label">Comms</span>
+                <span class="hud-value" style="color: #ffaa00; text-shadow: 0 0 12px rgba(255, 170, 0, 0.5);">📡 RX:
+                    TRANQUILITY</span>
+            </div>
         </div>
+    </div>
+
+    <!-- Phase Simulator: Hidden Display -->
+    <div id="phase-display"
+        style="display:none; position:absolute; top:10%; width:100%; text-align:center; color:#00e5ff; font-family:monospace; font-size:24px; text-transform:uppercase; letter-spacing:4px; z-index:110; pointer-events:none; text-shadow: 0 0 10px rgba(0, 229, 255, 0.8);">
+        FULL MOON
+    </div>
+
+    <!-- God Clock: Time Warp Indicator -->
+    <div id="god-clock-indicator">
+        <span class="clock-icon">☉</span>
+        <span class="clock-label">GOD CLOCK</span>
+        <span class="clock-speed">×1</span>
     </div>
     <div id="dpad-container" aria-label="Flight Controls">
         <button id="dpad-up" class="dpad-btn" aria-label="Move Forward">▲</button>
@@ -465,6 +544,9 @@
 
                     <div class="control-label">Mobile:</div>
                     <div>Physical gyroscope to look. On-screen D-Pad to thrust.</div>
+
+                    <div class="control-label">Phase Sim:</div>
+                    <div>Hold Shift to lock camera and simulate lunar phases. 1 Day = 1.5 Seconds.</div>
                 </div>
             </div>
 
@@ -474,9 +556,9 @@
 
     <!-- Easter Egg: Cinematic Reveal Overlay -->
     <div id="dj-overlay">
-        <p class="dj-dedication">To Dhriti,</p>
+        <p class="dj-dedication">For Dhriti,</p>
         <p class="dj-line">The moon pulls the ocean, all the time.</p>
-        <p class="dj-line">And from today she sings for you.</p>
+        <p class="dj-line">And she will always sing for you when you look at her. - P </p>
     </div>
 
     <!-- Basis Universal WASM Transcoder (from local build, no 3rd-party dependency) -->
