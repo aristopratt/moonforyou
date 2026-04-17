@@ -152,6 +152,8 @@ in mat3 vTBN;
 uniform sampler2D uAlbedo;
 uniform sampler2D uNormal;
 uniform vec3  u_dynamicSunDirection;   // God Clock — rotated each frame
+uniform vec3  u_earthLightDirection;
+uniform vec3  u_earthLightColor;
 uniform float uTexReady;               // 1.0 = textured, 0.0 = fallback grid
 
 out vec4 oColor;
@@ -177,10 +179,15 @@ void main(){
     vec3 L = normalize(u_dynamicSunDirection);
     float NdotL = max(dot(N, L), 0.0);
 
+    // Earthshine
+    float earthDiffuse = max(dot(N, normalize(u_earthLightDirection)), 0.0);
+    vec3 earthLight = earthDiffuse * u_earthLightColor;
+
     // Void persistence: near-zero ambient so the dark side is absolute deep-void black.
     // The 0.005 ambient prevents pure mathematical zero (GPU precision) while remaining
     // visually indistinguishable from true black — brutal, stark terminator shadows.
-    vec3 c = albedo * (0.005 + NdotL);
+    vec3 totalLight = vec3(0.005 + NdotL) + earthLight;
+    vec3 c = albedo * totalLight;
 
     // Reinhard tonemap + gamma
     c = c / (c + 1.0);
@@ -459,7 +466,7 @@ function loadPNGTexture(gl, url) {
 // 6. ENGINE STATE
 // ═══════════════════════════════════════════════════════════════
 let gl, program, vao, idxCount;
-let uModel, uView, uProj, uDynamicSunDir, uTexReady, uAlbedoLoc, uNormalLoc;
+let uModel, uView, uProj, uDynamicSunDir, uEarthLightDirLoc, uEarthLightColorLoc, uTexReady, uAlbedoLoc, uNormalLoc;
 let albedoTex = null, normalTex = null, texturesLoaded = false;
 let xrSession = null, xrRefSpace = null, raf = null;
 let starProgram, starVao, starCount, starBuf, uStarModel, uStarView, uStarProj, uStarPointScale;
@@ -628,6 +635,8 @@ async function initEngine() {
     uView     = gl.getUniformLocation(program, 'uView');
     uProj     = gl.getUniformLocation(program, 'uProj');
     uDynamicSunDir = gl.getUniformLocation(program, 'u_dynamicSunDirection');
+    uEarthLightDirLoc = gl.getUniformLocation(program, 'u_earthLightDirection');
+    uEarthLightColorLoc = gl.getUniformLocation(program, 'u_earthLightColor');
     uTexReady = gl.getUniformLocation(program, 'uTexReady');
     uNormalLoc = gl.getUniformLocation(program, 'uNormal');
     uAlbedoLoc = gl.getUniformLocation(program, 'uAlbedo');
@@ -982,6 +991,10 @@ function bindScene(time, deltaTime) {
 
     const dynamicSun = computeDynamicSunDirection(sunAngle);
     gl.uniform3f(uDynamicSunDir, dynamicSun[0], dynamicSun[1], dynamicSun[2]);
+
+    // Earthshine uniforms
+    gl.uniform3f(uEarthLightDirLoc, 0.0, 0.0, 1.0);
+    gl.uniform3f(uEarthLightColorLoc, 0.02, 0.05, 0.08);
 
     gl.uniform1f(uTexReady, texturesLoaded ? 1.0 : 0.0);
 
